@@ -19,9 +19,9 @@ int main(int argc, char** argv)
     namespace fs = std::filesystem;
     try
     {
-        std::string             raw, simulation, outputName;
+        std::string             raw, simulation, outputName, sourceInfo;
         po::options_description options("Options");
-        options.add_options()("help,h", "Show this help")("raw,r", po::value<std::string>(&raw)->default_value("data/156Eu-56Co-60Co_RawCounts.csv"), "Experimental raw-count CSV")("simulation,s", po::value<std::string>(&simulation)->default_value("data/70Ge_cloverarray.eff.csv"), "Simulated efficiency CSV")("output,o", po::value<std::string>(&outputName)->default_value("efficiency_plots.root"), "Output ROOT file; a filename alone is placed in efficiency_curves/");
+        options.add_options()("help,h", "Show this help")("raw,r", po::value<std::string>(&raw)->default_value("data/156Eu-56Co-60Co_RawCounts.csv"), "Experimental raw-count CSV")("simulation,s", po::value<std::string>(&simulation)->default_value("data/70Ge_cloverarray.eff.csv"), "Simulated efficiency CSV")("source-info", po::value<std::string>(&sourceInfo), "Source exposure CSV; enables absolute efficiencies")("output,o", po::value<std::string>(&outputName)->default_value("efficiency_plots.root"), "Output ROOT file; a filename alone is placed in efficiency_curves/");
         po::variables_map arguments;
         po::store(po::parse_command_line(argc, argv, options), arguments);
         po::notify(arguments);
@@ -31,6 +31,8 @@ int main(int argc, char** argv)
             return 0;
         }
         if (raw.empty() || simulation.empty() || outputName.empty()) throw std::runtime_error("Input and output paths must not be empty");
+        if (arguments.count("source-info") && sourceInfo.empty()) throw std::runtime_error("Source exposure path must not be empty");
+        if (!sourceInfo.empty() && !fs::exists(sourceInfo)) throw std::runtime_error("Cannot open source exposure CSV: " + sourceInfo);
 
         fs::path output(outputName);
         if (!output.has_parent_path()) output = fs::path("efficiency_curves") / output;
@@ -38,7 +40,8 @@ int main(int argc, char** argv)
         const auto status = fs::symlink_status(output);
         const bool exists = fs::exists(status);
         if (exists && fs::is_directory(output)) throw std::runtime_error("Output path is a directory: " + output.string());
-        if (exists && (fs::equivalent(output, raw) || fs::equivalent(output, simulation))) throw std::runtime_error("Output must not overwrite an input file");
+        if (exists && (fs::equivalent(output, raw) || fs::equivalent(output, simulation) ||
+                       (!sourceInfo.empty() && fs::equivalent(output, sourceInfo)))) throw std::runtime_error("Output must not overwrite an input file");
         if (exists)
         {
             std::cout << "Output " << output.string() << " already exists. Overwrite? [y/N] " << std::flush;
@@ -71,7 +74,7 @@ int main(int argc, char** argv)
         try
         {
             gROOT->SetBatch(kTRUE);
-            EfficiencyPlots::WriteEfficiencyPlots(raw, simulation, temporary.string());
+            EfficiencyPlots::WriteEfficiencyPlots(raw, simulation, temporary.string(), sourceInfo);
             if (exists)
                 fs::rename(temporary, output);
             else

@@ -13,6 +13,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <regex>
@@ -167,6 +168,132 @@ Experiment_t ReadExperimentalData(const std::string& path)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+/// Read run exposures keyed by the exact experimental source name.
+SourceExposures_t ReadSourceExposures(const std::string& path)
+{
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("Cannot open source exposure CSV: " + path);
+    std::string line;
+    if (!std::getline(input, line)) throw std::runtime_error("Empty source exposure CSV: " + path);
+    const auto fields = ParseCSVRow(line);
+    const auto columns = BuildColumnIndex(fields);
+    const auto source = FindColumn(columns, "source");
+    const auto activity = FindColumn(columns, "activity_bq");
+    const auto activityError = FindColumn(columns, "activity_uncertainty_bq");
+    const auto elapsed = FindColumn(columns, "elapsed_time_s");
+    const auto live = FindColumn(columns, "live_fraction");
+    const auto liveError = FindColumn(columns, "live_fraction_uncertainty");
+    const auto status = FindColumn(columns, "status");
+    SourceExposures_t result;
+    size_t row = 1;
+    while (std::getline(input, line))
+    {
+        ++row;
+        if (TrimWhitespace(line).empty()) continue;
+        const auto values = ParseCSVRow(line);
+        const auto context = path + ":" + std::to_string(row);
+        if (values.size() != fields.size()) throw std::runtime_error("Wrong number of fields in " + context);
+        SourceExposure_t exposure;
+        exposure.fStatus = values[status];
+        if (values[source].empty() ||
+            (exposure.fStatus != "example" && exposure.fStatus != "measured" && exposure.fStatus != "normalize"))
+            throw std::runtime_error("Invalid source exposure in " + context);
+        if (exposure.fStatus != "normalize")
+        {
+            exposure.fActivityBq = ParseNumber(values[activity], context);
+            exposure.fActivityErrorBq = ParseNumber(values[activityError], context);
+            exposure.fElapsedSeconds = ParseNumber(values[elapsed], context);
+            exposure.fLiveFraction = ParseNumber(values[live], context);
+            exposure.fLiveFractionError = ParseNumber(values[liveError], context);
+            if (exposure.fActivityBq <= 0 || exposure.fActivityErrorBq < 0 || exposure.fElapsedSeconds <= 0 ||
+                exposure.fLiveFraction <= 0 || exposure.fLiveFraction > 1 || exposure.fLiveFractionError < 0)
+                throw std::runtime_error("Invalid source exposure in " + context);
+            const double decays = exposure.fActivityBq * exposure.fElapsedSeconds * exposure.fLiveFraction;
+            if (!std::isfinite(decays) || decays <= 0) throw std::runtime_error("Invalid effective decay count in " + context);
+        }
+        if (!result.emplace(values[source], exposure).second)
+            throw std::runtime_error("Duplicate source exposure '" + values[source] + "' in " + context);
+    }
+    if (result.empty()) throw std::runtime_error("No source exposures in " + path);
+    return result;
+}
+
+/// Interpolate a curve and its uncertainty without extrapolating.
+bool InterpolateCurve(const Curve_t& curve, double x, double& y, double& ey);
+
+////////////////////////////////////////////////////////////////////////////////
+/// Accumulate inverse-variance weighted log ratios over interpolated overlaps.
+bool AccumulateLogRatios(const Curve_t& source, const Curve_t& reference, double& weightedLog, double& weights)
+{
+    bool used = false;
+    for (const auto& point : source)
+    {
+        double y = 0, ey = 0;
+        if (!InterpolateCurve(reference, point.fEnergy, y, ey) || y <= 0) continue;
+        const double variance = std::pow(point.fValueError / point.fValue, 2) + std::pow(ey / y, 2);
+        if (variance <= 0 || !std::isfinite(variance)) continue;
+        const double weight = 1 / variance;
+        weightedLog += weight * std::log(y / point.fValue);
+        weights += weight;
+        used = true;
+    }
+    return used;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+/// Convert measured exposures and align unmeasured sources to measured curves.
+AbsoluteEfficiencies_t CalculateAbsoluteEfficiencies(const Sources_t& corrected, const SourceExposures_t& exposures)
+{
+    AbsoluteEfficiencies_t result;
+    for (const auto& source : corrected)
+    {
+        const auto it = exposures.find(source.first);
+        if (it == exposures.end()) throw std::runtime_error("Missing source exposure for " + source.first);
+        const auto& exposure = it->second;
+        if (exposure.fStatus == "normalize") continue;
+        const double decays = exposure.fActivityBq * exposure.fElapsedSeconds * exposure.fLiveFraction;
+        const double relativeExposureError = std::hypot(exposure.fActivityErrorBq / exposure.fActivityBq,
+                                                        exposure.fLiveFractionError / exposure.fLiveFraction);
+        for (const auto& point : source.second)
+        {
+            const double value = point.fValue / decays;
+            const double error = std::hypot(point.fValueError / decays, value * relativeExposureError);
+            if (!std::isfinite(value) || !std::isfinite(error))
+                throw std::runtime_error("Invalid absolute efficiency for " + source.first);
+            result.fCurves[source.first].push_back({point.fEnergy, point.fEnergyError, value, error});
+        }
+    }
+    for (const auto& source : corrected)
+    {
+        if (exposures.at(source.first).fStatus != "normalize") continue;
+        double weightedLog = 0, weights = 0;
+        auto& references = result.fNormalizationReferences[source.first];
+        for (const auto& reference : result.fCurves)
+        {
+            if (exposures.at(reference.first).fStatus != "measured") continue;
+            if (AccumulateLogRatios(source.second, reference.second, weightedLog, weights))
+                references.push_back(reference.first);
+        }
+        if (references.empty() || !std::isfinite(weights) || weights <= 0)
+            throw std::runtime_error("No usable overlap with measured sources for " + source.first);
+        const double factor = std::exp(weightedLog / weights);
+        if (!std::isfinite(factor) || factor <= 0)
+            throw std::runtime_error("Invalid absolute normalization factor for " + source.first);
+        result.fNormalizationFactors[source.first] = factor;
+        auto& curve = result.fCurves[source.first];
+        for (const auto& point : source.second)
+        {
+            const double value = point.fValue * factor;
+            const double error = point.fValueError * factor;
+            if (!std::isfinite(value) || !std::isfinite(error))
+                throw std::runtime_error("Invalid normalized absolute efficiency for " + source.first);
+            curve.push_back({point.fEnergy, point.fEnergyError, value, error});
+        }
+    }
+    return result;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 /// Read simulated clover and CeBr efficiency curves.
 Simulations_t ReadSimulationData(const std::string& path)
 {
@@ -286,19 +413,8 @@ Alignment_t AlignSourceCurves(const Sources_t& sources)
     {
         if (source.first == reference->first) continue;
         double weightedLog = 0, weights = 0;
-        size_t matches = 0;
-        for (const auto& point : source.second)
-        {
-            double y = 0, ey = 0;
-            if (!InterpolateCurve(reference->second, point.fEnergy, y, ey) || y <= 0) continue;
-            const double variance = std::pow(point.fValueError / point.fValue, 2) + std::pow(ey / y, 2);
-            if (variance <= 0 || !std::isfinite(variance)) continue;
-            const double weight = 1 / variance;
-            weightedLog += weight * std::log(y / point.fValue);
-            weights += weight;
-            ++matches;
-        }
-        if (matches == 0 || weights <= 0) throw std::runtime_error("No overlap for source " + source.first + " with reference " + reference->first);
+        const bool matches = AccumulateLogRatios(source.second, reference->second, weightedLog, weights);
+        if (!matches || weights <= 0) throw std::runtime_error("No overlap for source " + source.first + " with reference " + reference->first);
         const double factor = std::exp(weightedLog / weights);
         if (!std::isfinite(factor) || factor <= 0) throw std::runtime_error("Invalid relative scale for " + source.first);
         result.fFactors[source.first] = factor;
@@ -383,7 +499,8 @@ void WriteSourcePlot(TDirectory* dir, const std::string& name, const std::string
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Write one detector's simulation, experimental graphs, and normalization.
-void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simulations_t& simulation, const Experiment_t& experiment)
+void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simulations_t& simulation,
+                        const Experiment_t& experiment, const SourceExposures_t* exposures)
 {
     auto* dir = parent->mkdir(name.c_str());
     if (!dir) throw std::runtime_error("Cannot create ROOT directory for " + name);
@@ -425,16 +542,60 @@ void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simul
     for (const auto& factor : aligned.fFactors) metadata << "; source_scale_" << factor.first << "=" << factor.second;
     dir->cd();
     TNamed("normalization", metadata.str().c_str()).Write();
+    if (exposures)
+    {
+        const auto absolute = CalculateAbsoluteEfficiencies(corrected->second, *exposures);
+        WriteSourcePlot(dir, "absolute", name + " absolute efficiency;Energy (keV);Full-energy peak efficiency",
+                        absolute.fCurves, &curves);
+        std::ostringstream exposureMetadata;
+        exposureMetadata << std::setprecision(17);
+        for (const auto& source : corrected->second)
+        {
+            const auto& exposure = exposures->at(source.first);
+            exposureMetadata << source.first << ": status=" << exposure.fStatus;
+            if (exposure.fStatus == "normalize")
+            {
+                exposureMetadata << ", normalization_factor=" << absolute.fNormalizationFactors.at(source.first)
+                                 << ", references=";
+                const auto& references = absolute.fNormalizationReferences.at(source.first);
+                for (size_t i = 0; i < references.size(); ++i)
+                    exposureMetadata << (i ? "+" : "") << references[i];
+            }
+            else exposureMetadata << ", activity_bq=" << exposure.fActivityBq
+                             << ", activity_uncertainty_bq=" << exposure.fActivityErrorBq
+                             << ", elapsed_time_s=" << exposure.fElapsedSeconds
+                             << ", live_fraction=" << exposure.fLiveFraction
+                             << ", live_fraction_uncertainty=" << exposure.fLiveFractionError;
+            exposureMetadata << "; ";
+        }
+        dir->cd();
+        TNamed("absolute_exposure", exposureMetadata.str().c_str()).Write();
+    }
 }
 } // namespace EfficiencyPlots
 
 ////////////////////////////////////////////////////////////////////////////////
 /// Validate the input curves and write all detector directories to a ROOT file.
-void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std::string& simulationFile, const std::string& outputFile)
+void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std::string& simulationFile,
+                                            const std::string& outputFile, const std::string& sourceInfoFile)
 {
     using namespace EfficiencyPlots;
     const auto experiment = ReadExperimentalData(rawFile);
     const auto simulation = ReadSimulationData(simulationFile);
+    const auto exposures = sourceInfoFile.empty() ? SourceExposures_t{} : ReadSourceExposures(sourceInfoFile);
+    const auto* exposurePtr = sourceInfoFile.empty() ? nullptr : &exposures;
+    if (exposurePtr)
+    {
+        for (const auto& detector : experiment.fCorrected)
+        {
+            try { CalculateAbsoluteEfficiencies(detector.second, exposures); }
+            catch (const std::runtime_error& error) { throw std::runtime_error("Detector " + detector.first + ": " + error.what()); }
+        }
+        for (const auto& source : exposures)
+            if (source.second.fStatus == "example")
+                std::cerr << "Warning: example exposure values used for " << source.first
+                          << "; absolute efficiencies are illustrative only." << std::endl;
+    }
     // Validate inputs and alignments before opening the output.
     for (const auto& detector : experiment.fDetectors)
     {
@@ -454,7 +615,7 @@ void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std
     if (!output || output->IsZombie()) throw std::runtime_error("Cannot create output: " + outputFile);
     const std::regex crossName(R"(^C[0-9]+$)");
     const std::regex backName(R"(^B[0-9]+$)");
-    for (const auto& detector : simulation) { WriteDetectorPlots(output.get(), detector.first, simulation, experiment); }
+    for (const auto& detector : simulation) { WriteDetectorPlots(output.get(), detector.first, simulation, experiment, exposurePtr); }
     for (const auto& detector : experiment.fDetectors)
     {
         if (detector.find('+') == std::string::npos) continue;
@@ -462,7 +623,7 @@ void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std
         const bool isCross = std::regex_match(parts.front(), crossName);
         for (const auto& part : parts)
             if (!std::regex_match(part, isCross ? crossName : backName)) throw std::runtime_error("Mixed or invalid detector group: " + detector);
-        WriteDetectorPlots(output.get(), detector, simulation, experiment);
+        WriteDetectorPlots(output.get(), detector, simulation, experiment, exposurePtr);
     }
     output->Write();
     if (output->TestBit(TFile::kWriteError)) throw std::runtime_error("Error writing output ROOT file");

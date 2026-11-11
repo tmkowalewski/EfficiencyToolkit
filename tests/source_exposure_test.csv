@@ -1,0 +1,4 @@
+source,activity_bq,activity_uncertainty_bq,elapsed_time_s,live_fraction,live_fraction_uncertainty,status
+152Eu,1000000,50000,40000,0.8,0.04,measured
+56Co,2000000,20000,30000,0.9,0.01,measured
+60Co,500000,25000,10000,0.95,0.01,measured

@@ -31,11 +31,27 @@ struct Alignment_t {
    std::string fReference;
 };
 
+/// Run-averaged activity and exposure for an experimental source.
+struct SourceExposure_t {
+   Double_t fActivityBq = 0, fActivityErrorBq = 0, fElapsedSeconds = 0, fLiveFraction = 0, fLiveFractionError = 0;
+   std::string fStatus;
+};
+
+using SourceExposures_t = std::map<std::string, SourceExposure_t>;
+
+/// Absolute curves and fitted scales for sources without measured exposures.
+struct AbsoluteEfficiencies_t {
+   Sources_t fCurves;
+   std::map<std::string, Double_t> fNormalizationFactors;
+   std::map<std::string, std::vector<std::string>> fNormalizationReferences;
+};
+
 /// Remove surrounding whitespace from a string.
 std::string TrimWhitespace(const std::string &value);
 
 /// Read the input data and write the detector plots to a ROOT file.
-void WriteEfficiencyPlots(const std::string &rawFile, const std::string &simulationFile, const std::string &outputFile);
+void WriteEfficiencyPlots(const std::string &rawFile, const std::string &simulationFile, const std::string &outputFile,
+                          const std::string &sourceInfoFile = "");
 } // namespace EfficiencyPlots
 
 #endif

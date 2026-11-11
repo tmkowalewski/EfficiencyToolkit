@@ -56,6 +56,74 @@ shows the aligned data with both simulation curves; its component graphs are
 also saved individually. Individual detectors without experimental columns
 have simulation plots only. Blank measurements are omitted.
 
+## Absolute efficiency
+
+Absolute efficiency is optional and is enabled by providing a source-exposure
+CSV. The supplied file contains **invented examples**, not measurement values:
+
+```sh
+./EfficiencyToolkit/bin/make_eff_curves --source-info data/source_exposure_example.csv --output absolute_example.root
+```
+
+Replace the example numbers before using results scientifically. Each source
+name must exactly match the `Source` column in the raw-count CSV; one row per
+source is required. The exposure columns are:
+
+| Column | Meaning |
+|---|---|
+| `source` | Source name, e.g. `152Eu` |
+| `activity_bq` | Average source activity during the elapsed run, in decays/s |
+| `activity_uncertainty_bq` | One-standard-deviation uncertainty in that activity |
+| `elapsed_time_s` | Total elapsed (wall-clock) run time, in seconds, not live time |
+| `live_fraction` | Live time divided by elapsed time, between 0 and 1 |
+| `live_fraction_uncertainty` | One-standard-deviation uncertainty in the fraction |
+| `status` | `measured`, `example`, or `normalize` |
+
+Change `status` to `measured` only after replacing the example values. The
+zero uncertainties in the sample are placeholders, not evidence that the
+quantities are exact. No uncertainty is assigned to elapsed time. Values and
+status are saved in each detector's `absolute_exposure` object.
+
+Use `normalize` when a source has no reliable exposure, for example
+`60Co,,,,,,normalize`. Its exposure fields are ignored, including any values
+already present. For each detector, the program interpolates every overlapping
+`measured` absolute curve at the source's energies (without extrapolation) and
+fits one multiplicative scale to the intensity-corrected counts using an
+inverse-variance weighted mean of the log ratios. At least one measured curve
+must overlap; `example` and other `normalize` sources are not references.
+The scale and contributing reference sources are saved in `absolute_exposure`.
+These points are empirically normalized to an absolute scale, not independently
+measured absolute efficiencies.
+
+For each measured peak, efficiency is
+`counts / (gamma_emission_probability * activity_bq * elapsed_time_s * live_fraction)`.
+The intensity is the emission probability per total source decay; the separate
+decay-mode branching ratio is not applied again. The activity must already be
+the average during the run, including any decay correction. Multiplication by
+the live fraction assumes the live-time fraction is representative throughout
+the run; it is not valid for arbitrary time-dependent dead time correlated
+with source decay. No decay integration, source attenuation, angular,
+geometry, or coincidence-summing correction is applied. These assumptions
+and the correctness of inputs determine whether the result is physically
+absolute.
+
+Point errors propagate the independent supplied count, gamma-intensity,
+activity, and live-fraction uncertainties in quadrature. Activity and live
+fraction errors are shared by all points from the same source; ROOT graph
+error bars show marginal uncertainties only and do not encode correlations.
+For `normalize` sources, error bars include only the scaled count and intensity
+errors: fitted-scale uncertainty, interpolation correlations, and correlations
+with the reference data are not included. Common exposure uncertainties and
+shared interpolation points also make the fit weights approximate.
+The `absolute` canvas contains one graph per source and overlays unscaled
+simulation efficiencies; separately saved objects are named
+`absolute_<source>` and `absolute_simulation_<type>`. Clover experimental
+counts are assumed to be addback; the sum simulation curve is also shown for
+comparison. Existing raw and relative plots remain unchanged.
+
+Run the absolute-efficiency integration and input-validation checks from the
+project directory with `make -C EfficiencyToolkit test`.
+
 ## Relative normalization
 
 These are **relative**, not absolute, efficiencies:
@@ -84,7 +152,7 @@ The source alignment empirically absorbs differences in run time, source
 activity, and other source-dependent normalization factors. It is not a
 measured live-time correction and does not establish absolute efficiency.
 No live times, activities, attenuation, coincidence-summing corrections, or
-decay corrections are assumed. The alignment depends on the interpolated
+decay corrections are assumed in the relative normalization. The alignment depends on the interpolated
 reference data, so sparse overlap or source-specific systematic effects can
 bias it. The raw experimental clover peaks are assumed to be addback counts;
 the crystal-sum curve is shown for comparison.

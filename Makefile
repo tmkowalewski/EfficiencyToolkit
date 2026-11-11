@@ -3,7 +3,7 @@ CPPFLAGS += -Iinclude $(shell root-config --cflags)
 CXXFLAGS ?= -O2 -Wall -Wextra
 LDLIBS += $(shell root-config --libs) -lboost_program_options
 
-.PHONY: all clean make_eff_curves get_sim_efficiencies compare_layout
+.PHONY: all clean make_eff_curves get_sim_efficiencies compare_layout test
 
 all: bin/make_eff_curves bin/get_sim_efficiencies
 
@@ -12,6 +12,9 @@ make_eff_curves: bin/make_eff_curves
 get_sim_efficiencies: bin/get_sim_efficiencies
 
 compare_layout: bin/compare_layout
+
+test: bin/make_eff_curves bin/check_absolute
+	bash tests/test_absolute.sh
 
 bin:
 	mkdir -p $@
@@ -25,5 +28,8 @@ bin/get_sim_efficiencies: src/get_sim_efficiencies.cpp src/simulation.cpp includ
 bin/compare_layout: tests/compare_layout.cpp | bin
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+bin/check_absolute: tests/check_absolute.cpp | bin
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
 clean:
-	$(RM) bin/make_eff_curves bin/get_sim_efficiencies bin/compare_layout
+	$(RM) bin/make_eff_curves bin/get_sim_efficiencies bin/compare_layout bin/check_absolute
