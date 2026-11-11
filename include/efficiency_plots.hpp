@@ -39,6 +39,14 @@ struct SourceExposure_t {
 
 using SourceExposures_t = std::map<std::string, SourceExposure_t>;
 
+/// RadWare shape settings and an optional efficiency scale.
+struct RadwareFitOptions_t {
+   Double_t fLowSlope = 1;
+   Double_t fTurnover = 20;
+   Double_t fScale = 0;
+   bool fFixLowSlope = false;
+};
+
 /// Absolute curves and fitted scales for sources without measured exposures.
 struct AbsoluteEfficiencies_t {
    Sources_t fCurves;
@@ -51,7 +59,8 @@ std::string TrimWhitespace(const std::string &value);
 
 /// Read the input data and write the detector plots to a ROOT file.
 void WriteEfficiencyPlots(const std::string &rawFile, const std::string &simulationFile, const std::string &outputFile,
-                          const std::string &sourceInfoFile = "");
+                          const std::string &sourceInfoFile = "", bool radwareFit = false,
+                          const RadwareFitOptions_t &fitOptions = {}, bool debug = false);
 } // namespace EfficiencyPlots
 
 #endif

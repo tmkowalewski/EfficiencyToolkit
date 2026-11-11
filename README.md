@@ -42,9 +42,10 @@ single- or two-letter simulation
 names are classified as CeBr. Longer names and individual clover crystals are
 not included. Check the names if the detector configuration changes.
 
-Each detector has a `simulation` canvas and separately saved
-`simulation_addback` and `simulation_sum` graphs (or `simulation_single` for
-CeBr). Pair curves are the pointwise sums of the individual efficiencies.
+Each detector has a `simulation` canvas. Simulations are drawn as lines with
+shaded one-standard-deviation uncertainty bands; the same style is used for
+simulation overlays on the relative and absolute plots. Pair curves are the
+pointwise sums of the individual efficiencies.
 Their displayed uncertainties are added in quadrature, assuming independence;
 correlated simulation uncertainties are not accounted for. The sum and
 addback curves refer to each clover's crystal sum and addback, respectively,
@@ -52,20 +53,26 @@ not an event-level addback between separate clovers.
 
 Where experimental data exist, `raw_counts` shows the original peak counts and
 their supplied energy and count uncertainties, grouped by source. `relative`
-shows the aligned data with both simulation curves; its component graphs are
-also saved individually. Individual detectors without experimental columns
+shows the aligned data with both simulation curves. Individual detectors without experimental columns
 have simulation plots only. Blank measurements are omitted.
+
+Use `--debug` to additionally save individual component graphs such as
+`simulation_addback`, `simulation_sum`, `raw_counts_152Eu` and
+`relative_simulation_addback` as ROOT objects in each detector directory.
+Without `--debug`, these graphs remain embedded in their combined canvases
+but are not separate directory entries. Fit functions, fit results, and
+normalization metadata remain separate objects in either mode.
 
 ## Absolute efficiency
 
 Absolute efficiency is optional and is enabled by providing a source-exposure
-CSV. The supplied file contains **invented examples**, not measurement values:
+CSV. The example file may contain placeholder values; verify every entry:
 
 ```sh
 ./EfficiencyToolkit/bin/make_eff_curves --source-info data/source_exposure_example.csv --output absolute_example.root
 ```
 
-Replace the example numbers before using results scientifically. Each source
+Replace any example numbers before using results scientifically. Each source
 name must exactly match the `Source` column in the raw-count CSV; one row per
 source is required. The exposure columns are:
 
@@ -80,7 +87,7 @@ source is required. The exposure columns are:
 | `status` | `measured`, `example`, or `normalize` |
 
 Change `status` to `measured` only after replacing the example values. The
-zero uncertainties in the sample are placeholders, not evidence that the
+zero uncertainties in an example are placeholders, not evidence that the
 quantities are exact. No uncertainty is assigned to elapsed time. Values and
 status are saved in each detector's `absolute_exposure` object.
 
@@ -116,7 +123,7 @@ errors: fitted-scale uncertainty, interpolation correlations, and correlations
 with the reference data are not included. Common exposure uncertainties and
 shared interpolation points also make the fit weights approximate.
 The `absolute` canvas contains one graph per source and overlays unscaled
-simulation efficiencies; separately saved objects are named
+simulation efficiencies; with `--debug`, separately saved objects are named
 `absolute_<source>` and `absolute_simulation_<type>`. Clover experimental
 counts are assumed to be addback; the sum simulation curve is also shown for
 comparison. Existing raw and relative plots remain unchanged.
@@ -157,6 +164,56 @@ reference data, so sparse overlap or source-specific systematic effects can
 bias it. The raw experimental clover peaks are assumed to be addback counts;
 the crystal-sum curve is shown for comparison.
 
+## RadWare efficiency fit
+
+Use `--radware-fit` to fit all experimental source points together for each
+detector, separately for the relative plot and, when `--source-info` is given,
+the absolute plot:
+
+```sh
+./EfficiencyToolkit/bin/make_eff_curves --source-info data/source_exposure_example.csv \
+  --radware-fit --output radware_efficiencies.root
+```
+
+The overlays and saved `relative_radware_fit` and `absolute_radware_fit` TF1
+objects use the RadWare EFFIT function:
+
+```
+efficiency = exp(((A + B*x + C*x*x)^(-G) + (D + E*y + F*y*y)^(-G))^(-1/G)) / scale
+x = ln(energy_keV / 100)
+y = ln(energy_keV / 1000)
+```
+
+The RadWare expression requires positive logarithmic branches. The fixed
+`scale` multiplies the input efficiency before applying the function and is
+saved as its eighth parameter; the output is divided by that same value.
+By default it is chosen separately for each fit so the largest input value is
+10,000 after scaling. This choice affects the parameterization and fitted
+shape, not just the units. Use `--radware-scale N` to fix a different positive
+scale for every fit; it must work for both relative and absolute values when
+both are fitted. The stored parameters are not directly usable as a RadWare
+`.eff` file without accounting for this external scale.
+
+By default `C=0` and `G=20` are fixed, while `A`, `B`, `D`, `E`, and `F`
+are fitted. The fit tries multiple starting values for B and retains the
+converged, positive-branch solution with the lowest chi-square. Set a different
+fixed G with `--radware-g`, or fix B with `--radware-b` (for example,
+`--radware-b 1` reproduces the earlier fixed-slope approach). Fixing B can be
+useful when there are too few low-energy data to constrain the turnover.
+At least six points are required when B is free, or five when it is fixed;
+the fit also requires a usable covariance matrix. The fitted range is the
+observed energy range; extrapolation is not validated.
+
+The ROOT `*_radware_fit_result` objects contain fit status, chi-square, degrees
+of freedom, parameter errors and covariance. Fits minimize residuals in
+efficiency divided by the graph's vertical point uncertainty; energy errors
+and correlations are ignored. In particular, shared exposure errors and
+uncertainties of source-normalization factors are not represented in the fit
+covariance. A warning is printed if chi-square per degree of freedom exceeds 5
+or the covariance had to be forced positive definite. Convergence alone does
+not imply an adequate calibration; inspect residuals, fit range, sensitivity
+to fixed parameters and scale, and the resulting curve before scientific use.
+
 ## Simulation histograms
 
 The separate `get_sim_efficiencies` executable requires explicit actions:
@@ -194,7 +251,8 @@ not equivalent to the corrected results.
 
 When a grouped file from the earlier output layout is available, compare its
 detectors, graph values, uncertainties, and normalization metadata with a
-newly generated flat file:
+newly generated flat file. Generate the flat file with `--debug` so its
+individual graphs are available to the comparison tool:
 
 ```sh
 make -C EfficiencyToolkit compare_layout

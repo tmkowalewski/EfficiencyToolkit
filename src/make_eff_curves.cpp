@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <boost/program_options.hpp>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -20,8 +21,9 @@ int main(int argc, char** argv)
     try
     {
         std::string             raw, simulation, outputName, sourceInfo;
+        EfficiencyPlots::RadwareFitOptions_t fitOptions;
         po::options_description options("Options");
-        options.add_options()("help,h", "Show this help")("raw,r", po::value<std::string>(&raw)->default_value("data/156Eu-56Co-60Co_RawCounts.csv"), "Experimental raw-count CSV")("simulation,s", po::value<std::string>(&simulation)->default_value("data/70Ge_cloverarray.eff.csv"), "Simulated efficiency CSV")("source-info", po::value<std::string>(&sourceInfo), "Source exposure CSV; enables absolute efficiencies")("output,o", po::value<std::string>(&outputName)->default_value("efficiency_plots.root"), "Output ROOT file; a filename alone is placed in efficiency_curves/");
+        options.add_options()("help,h", "Show this help")("raw,r", po::value<std::string>(&raw)->default_value("data/156Eu-56Co-60Co_RawCounts.csv"), "Experimental raw-count CSV")("simulation,s", po::value<std::string>(&simulation)->default_value("data/70Ge_cloverarray.eff.csv"), "Simulated efficiency CSV")("source-info", po::value<std::string>(&sourceInfo), "Source exposure CSV; enables absolute efficiencies")("debug", "Save individual component graphs as well as combined canvases")("radware-fit", "Fit source data using the RadWare efficiency function")("radware-b", po::value<double>(&fitOptions.fLowSlope), "Fix RadWare low-energy slope B (default: fit B)")("radware-g", po::value<double>(&fitOptions.fTurnover), "Fix RadWare turnover parameter G (default 20)")("radware-scale", po::value<double>(&fitOptions.fScale), "Fixed positive efficiency multiplier (default automatic per fit)")("output,o", po::value<std::string>(&outputName)->default_value("efficiency_plots.root"), "Output ROOT file; a filename alone is placed in efficiency_curves/");
         po::variables_map arguments;
         po::store(po::parse_command_line(argc, argv, options), arguments);
         po::notify(arguments);
@@ -32,6 +34,13 @@ int main(int argc, char** argv)
         }
         if (raw.empty() || simulation.empty() || outputName.empty()) throw std::runtime_error("Input and output paths must not be empty");
         if (arguments.count("source-info") && sourceInfo.empty()) throw std::runtime_error("Source exposure path must not be empty");
+        if (!arguments.count("radware-fit") && (arguments.count("radware-b") || arguments.count("radware-g") ||
+                                                arguments.count("radware-scale")))
+            throw std::runtime_error("RadWare parameters require --radware-fit");
+        fitOptions.fFixLowSlope = arguments.count("radware-b") != 0;
+        if (!std::isfinite(fitOptions.fLowSlope) || !std::isfinite(fitOptions.fTurnover) || fitOptions.fTurnover <= 0 ||
+            !std::isfinite(fitOptions.fScale) || (arguments.count("radware-scale") && fitOptions.fScale <= 0))
+            throw std::runtime_error("RadWare B must be finite and G and scale must be finite and positive");
         if (!sourceInfo.empty() && !fs::exists(sourceInfo)) throw std::runtime_error("Cannot open source exposure CSV: " + sourceInfo);
 
         fs::path output(outputName);
@@ -74,7 +83,8 @@ int main(int argc, char** argv)
         try
         {
             gROOT->SetBatch(kTRUE);
-            EfficiencyPlots::WriteEfficiencyPlots(raw, simulation, temporary.string(), sourceInfo);
+            EfficiencyPlots::WriteEfficiencyPlots(raw, simulation, temporary.string(), sourceInfo,
+                                                   arguments.count("radware-fit") != 0, fitOptions, arguments.count("debug") != 0);
             if (exists)
                 fs::rename(temporary, output);
             else
