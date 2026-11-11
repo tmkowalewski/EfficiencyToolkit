@@ -7,12 +7,15 @@ Program Options development library:
 make -C EfficiencyToolkit
 ```
 
+The executables are built in `EfficiencyToolkit/bin/`. Run
+`make -C EfficiencyToolkit clean` to remove them.
+
 Run the standalone executables from the parent efficiency calibration
 directory, where `data/`, `trees/`, `hists/`, and `efficiency_curves/`
 are located:
 
 ```sh
-./EfficiencyToolkit/make_eff_curves
+./EfficiencyToolkit/bin/make_eff_curves
 ```
 
 By default this reads `data/156Eu-56Co-60Co_RawCounts.csv` and
@@ -20,7 +23,7 @@ By default this reads `data/156Eu-56Co-60Co_RawCounts.csv` and
 `efficiency_curves/efficiency_plots.root`. To choose different files:
 
 ```sh
-./EfficiencyToolkit/make_eff_curves --raw raw.csv --simulation simulation.csv --output plots.root
+./EfficiencyToolkit/bin/make_eff_curves --raw raw.csv --simulation simulation.csv --output plots.root
 ```
 
 A bare output filename is placed in `efficiency_curves/`; an output path with
@@ -92,11 +95,11 @@ The separate `get_sim_efficiencies` executable requires explicit actions:
 
 ```sh
 # Sort trees, then generate the ROOT graph file and CSV.
-./EfficiencyToolkit/get_sim_efficiencies --sort --curves --threads 4
+./EfficiencyToolkit/bin/get_sim_efficiencies --sort --curves --threads 4
 
 # Or perform just one step.
-./EfficiencyToolkit/get_sim_efficiencies --sort
-./EfficiencyToolkit/get_sim_efficiencies --curves
+./EfficiencyToolkit/bin/get_sim_efficiencies --sort
+./EfficiencyToolkit/bin/get_sim_efficiencies --curves
 ```
 
 By default, sorting reads `trees/gamma.NNNNN.root` (tree `edep`) and writes
@@ -127,5 +130,5 @@ newly generated flat file:
 
 ```sh
 make -C EfficiencyToolkit compare_layout
-./EfficiencyToolkit/compare_layout grouped.root flat.root
+./EfficiencyToolkit/bin/compare_layout grouped.root flat.root
 ```
