@@ -81,8 +81,12 @@ void CheckStoredFit(TFile& file, const char* type)
     auto* fit = file.Get<TF1>((dir + prefix + "_radware_fit").c_str());
     auto* result = file.Get<TFitResult>((dir + prefix + "_radware_fit_result").c_str());
     auto* canvas = file.Get<TCanvas>((dir + prefix).c_str());
+    auto* band = file.Get<TGraphErrors>((dir + prefix + "_radware_fit_uncertainty").c_str());
+    auto* range = file.Get<TNamed>((dir + prefix + "_radware_fit_range").c_str());
     if (!fit || !result || !canvas || !canvas->GetListOfPrimitives()->FindObject(fit->GetName()))
         throw std::runtime_error("Missing saved RadWare function, result or overlay");
+    if (!band || !range || band->GetN() != 501 || band->GetPointX(500) != 8000)
+        throw std::runtime_error("Missing or incomplete 8 MeV uncertainty band");
     if (!result->IsValid() || result->CovMatrixStatus() < 2 || result->Ndf() <= 0 ||
         fit->GetParameter(2) != 0 || fit->GetParameter(6) != 20)
         throw std::runtime_error("Invalid stored fit result or fixed parameters");
@@ -105,8 +109,41 @@ void CheckStoredFit(TFile& file, const char* type)
         }
     }
     if (std::abs(chi2 - result->Chi2()) > 1e-6 * std::max(chi2, 1.) ||
-        result->Ndf() != count - 5 || fit->GetXmin() != minimum || fit->GetXmax() != maximum)
+        result->Ndf() != count - 5 || fit->GetXmin() != minimum || fit->GetXmax() != std::max(maximum, 8000.))
         throw std::runtime_error("Stored fit objective, degrees of freedom or range differs");
+    const std::string rangeText = range->GetTitle();
+    const auto minimumPosition = rangeText.find("data_min_keV=");
+    const auto maximumPosition = rangeText.find("data_max_keV=");
+    if (minimumPosition == std::string::npos || maximumPosition == std::string::npos ||
+        std::stod(rangeText.substr(minimumPosition + 13)) != minimum ||
+        std::stod(rangeText.substr(maximumPosition + 13)) != maximum)
+        throw std::runtime_error("Saved measured fit range differs");
+    for (int i : {0, 250, 500})
+    {
+        const double energy = band->GetPointX(i);
+        const double value = EvaluateRadware(energy, fit->GetParameters());
+        if (std::abs(band->GetPointY(i) / value - 1) > 1e-12)
+            throw std::runtime_error("Band center differs from fit");
+        double p[8], gradient[6];
+        for (int j = 0; j < 8; ++j) p[j] = fit->GetParameter(j);
+        for (int j = 0; j < 6; ++j)
+        {
+            const double step = 1e-5 * std::max(1., std::abs(p[j]));
+            p[j] += step;
+            const double upper = EvaluateRadware(energy, p);
+            p[j] -= 2 * step;
+            const double lower = EvaluateRadware(energy, p);
+            p[j] += step;
+            gradient[j] = (upper - lower) / (2 * step);
+        }
+        double variance = 0;
+        for (int j = 0; j < 6; ++j)
+            for (int k = 0; k < 6; ++k)
+                variance += gradient[j] * result->CovMatrix(j, k) * gradient[k];
+        if (variance <= 0 || !std::isfinite(band->GetErrorY(i)) ||
+            std::abs(band->GetErrorY(i) / std::sqrt(variance) - 1) > 1e-4)
+            throw std::runtime_error("Fit uncertainty differs from covariance propagation");
+    }
 }
 
 /// Run synthetic and persisted fit checks.

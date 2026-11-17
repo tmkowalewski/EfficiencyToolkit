@@ -1,4 +1,5 @@
 #include "efficiency_plots.hpp"
+#include "attenuation.hpp"
 
 #include <TROOT.h>
 #include <algorithm>
@@ -22,8 +23,12 @@ int main(int argc, char** argv)
     {
         std::string             raw, simulation, outputName, sourceInfo;
         EfficiencyPlots::RadwareFitOptions_t fitOptions;
+        EfficiencyPlots::AttenuationFiles_t attenuation;
         po::options_description options("Options");
         options.add_options()("help,h", "Show this help")("raw,r", po::value<std::string>(&raw)->default_value("data/156Eu-56Co-60Co_RawCounts.csv"), "Experimental raw-count CSV")("simulation,s", po::value<std::string>(&simulation)->default_value("data/70Ge_cloverarray.eff.csv"), "Simulated efficiency CSV")("source-info", po::value<std::string>(&sourceInfo), "Source exposure CSV; enables absolute efficiencies")("debug", "Save individual component graphs as well as combined canvases")("radware-fit", "Fit source data using the RadWare efficiency function")("radware-b", po::value<double>(&fitOptions.fLowSlope), "Fix RadWare low-energy slope B (default: fit B)")("radware-g", po::value<double>(&fitOptions.fTurnover), "Fix RadWare turnover parameter G (default 20)")("radware-scale", po::value<double>(&fitOptions.fScale), "Fixed positive efficiency multiplier (default automatic per fit)")("output,o", po::value<std::string>(&outputName)->default_value("efficiency_plots.root"), "Output ROOT file; a filename alone is placed in efficiency_curves/");
+        options.add_options()("capsules", po::value<std::string>(&attenuation.fCapsules), "Source capsule geometry CSV")
+            ("detector-positions", po::value<std::string>(&attenuation.fPositions), "Detector directions CSV")
+            ("attenuation-coefficients", po::value<std::string>(&attenuation.fCoefficients), "Material mass attenuation coefficient CSV");
         po::variables_map arguments;
         po::store(po::parse_command_line(argc, argv, options), arguments);
         po::notify(arguments);
@@ -34,6 +39,12 @@ int main(int argc, char** argv)
         }
         if (raw.empty() || simulation.empty() || outputName.empty()) throw std::runtime_error("Input and output paths must not be empty");
         if (arguments.count("source-info") && sourceInfo.empty()) throw std::runtime_error("Source exposure path must not be empty");
+        const int attenuationCount = arguments.count("capsules") + arguments.count("detector-positions") +
+                                     arguments.count("attenuation-coefficients");
+        if (attenuationCount != 0 && attenuationCount != 3)
+            throw std::runtime_error("Attenuation requires --capsules, --detector-positions and --attenuation-coefficients together");
+        if (attenuationCount && (attenuation.fCapsules.empty() || attenuation.fPositions.empty() || attenuation.fCoefficients.empty()))
+            throw std::runtime_error("Attenuation input paths must not be empty");
         if (!arguments.count("radware-fit") && (arguments.count("radware-b") || arguments.count("radware-g") ||
                                                 arguments.count("radware-scale")))
             throw std::runtime_error("RadWare parameters require --radware-fit");
@@ -42,6 +53,9 @@ int main(int argc, char** argv)
             !std::isfinite(fitOptions.fScale) || (arguments.count("radware-scale") && fitOptions.fScale <= 0))
             throw std::runtime_error("RadWare B must be finite and G and scale must be finite and positive");
         if (!sourceInfo.empty() && !fs::exists(sourceInfo)) throw std::runtime_error("Cannot open source exposure CSV: " + sourceInfo);
+        if (attenuationCount)
+            for (const auto& input : {attenuation.fCapsules, attenuation.fPositions, attenuation.fCoefficients})
+                if (!fs::exists(input)) throw std::runtime_error("Cannot open attenuation input: " + input);
 
         fs::path output(outputName);
         if (!output.has_parent_path()) output = fs::path("efficiency_curves") / output;
@@ -51,6 +65,9 @@ int main(int argc, char** argv)
         if (exists && fs::is_directory(output)) throw std::runtime_error("Output path is a directory: " + output.string());
         if (exists && (fs::equivalent(output, raw) || fs::equivalent(output, simulation) ||
                        (!sourceInfo.empty() && fs::equivalent(output, sourceInfo)))) throw std::runtime_error("Output must not overwrite an input file");
+        if (exists && attenuationCount)
+            for (const auto& input : {attenuation.fCapsules, attenuation.fPositions, attenuation.fCoefficients})
+                if (fs::equivalent(output, input)) throw std::runtime_error("Output must not overwrite an input file");
         if (exists)
         {
             std::cout << "Output " << output.string() << " already exists. Overwrite? [y/N] " << std::flush;
@@ -84,7 +101,8 @@ int main(int argc, char** argv)
         {
             gROOT->SetBatch(kTRUE);
             EfficiencyPlots::WriteEfficiencyPlots(raw, simulation, temporary.string(), sourceInfo,
-                                                   arguments.count("radware-fit") != 0, fitOptions, arguments.count("debug") != 0);
+                                                   arguments.count("radware-fit") != 0, fitOptions, arguments.count("debug") != 0,
+                                                   attenuationCount ? &attenuation : nullptr);
             if (exists)
                 fs::rename(temporary, output);
             else

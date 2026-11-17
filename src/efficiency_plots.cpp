@@ -1,4 +1,5 @@
 #include "efficiency_plots.hpp"
+#include "attenuation.hpp"
 #include "radware_fit.hpp"
 
 #include <TCanvas.h>
@@ -9,6 +10,7 @@
 #include <TLegend.h>
 #include <TMultiGraph.h>
 #include <TNamed.h>
+#include <TObjString.h>
 #include <TROOT.h>
 #include <TStyle.h>
 #include <algorithm>
@@ -427,7 +429,7 @@ Alignment_t AlignSourceCurves(const Sources_t& sources)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// Fit one simulation scale to the aligned experimental points.
+/// Fit one simulation scale to experimental points with inverse-variance weights.
 double CalculateSimulationScale(const Sources_t& sources, const Curve_t& simulation)
 {
     double numerator = 0, denominator = 0;
@@ -440,8 +442,11 @@ double CalculateSimulationScale(const Sources_t& sources, const Curve_t& simulat
             numerator += weight * y * p.fValue;
             denominator += weight * y * y;
         }
-    if (denominator <= 0 || numerator <= 0) throw std::runtime_error("Cannot scale simulation: no usable overlap");
-    return numerator / denominator;
+    if (!std::isfinite(numerator) || !std::isfinite(denominator) || denominator <= 0 || numerator <= 0)
+        throw std::runtime_error("Cannot scale simulation: no usable overlap or invalid weights");
+    const double scale = numerator / denominator;
+    if (!std::isfinite(scale) || scale <= 0) throw std::runtime_error("Invalid simulation scale");
+    return scale;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -487,6 +492,30 @@ void WriteSourcePlot(TDirectory* dir, const std::string& name, const std::string
     TLegend   legend(0.7, 0.65, 0.9, 0.9);
     const int colors[] = {kBlue + 1, kRed + 1, kGreen + 2, kMagenta + 1, kOrange + 7, kCyan + 2};
     int       index    = 0;
+    std::unique_ptr<RadwareFit_t> fit;
+    if (radwareFit)
+    {
+        fit = std::make_unique<RadwareFit_t>(FitRadwareEfficiency(sources, name + "_radware_fit", fitOptions));
+        dir->cd();
+        fit->fFunction->Write();
+        fit->fResult->Write((name + "_radware_fit_result").c_str());
+        fit->fUncertainty->Write();
+        std::ostringstream fitRange;
+        fitRange << std::setprecision(17) << "data_min_keV=" << fit->fDataMin << "; data_max_keV=" << fit->fDataMax
+                 << "; display_max_keV=" << fit->fFunction->GetXmax();
+        TNamed((name + "_radware_fit_range").c_str(), fitRange.str().c_str()).Write();
+        if (fit->fResult->CovMatrixStatus() == 2)
+            std::cerr << "Warning: " << title
+                      << " RadWare covariance was forced positive definite; parameter uncertainties may be unreliable."
+                      << std::endl;
+        if (fit->fResult->Ndf() > 0 && fit->fResult->Chi2() / fit->fResult->Ndf() > 5)
+            std::cerr << "Warning: " << title << " RadWare fit has chi2/ndf = "
+                      << fit->fResult->Chi2() / fit->fResult->Ndf()
+                      << "; inspect the fit and its uncertainties." << std::endl;
+        auto* band = fit->fUncertainty.release();
+        multi.Add(band, "3");
+        legend.AddEntry(band, "RadWare fit 1#sigma", "f");
+    }
     if (simulation)
         for (const auto& type : *simulation)
         {
@@ -505,23 +534,7 @@ void WriteSourcePlot(TDirectory* dir, const std::string& name, const std::string
         legend.AddEntry(g, source.first.c_str(), "pe");
         ++index;
     }
-    std::unique_ptr<RadwareFit_t> fit;
-    if (radwareFit)
-    {
-        fit = std::make_unique<RadwareFit_t>(FitRadwareEfficiency(sources, name + "_radware_fit", fitOptions));
-        dir->cd();
-        fit->fFunction->Write();
-        fit->fResult->Write((name + "_radware_fit_result").c_str());
-        if (fit->fResult->CovMatrixStatus() == 2)
-            std::cerr << "Warning: " << title
-                      << " RadWare covariance was forced positive definite; parameter uncertainties may be unreliable."
-                      << std::endl;
-        if (fit->fResult->Ndf() > 0 && fit->fResult->Chi2() / fit->fResult->Ndf() > 5)
-            std::cerr << "Warning: " << title << " RadWare fit has chi2/ndf = "
-                      << fit->fResult->Chi2() / fit->fResult->Ndf()
-                      << "; inspect the fit and its uncertainties." << std::endl;
-        legend.AddEntry(fit->fFunction.get(), "RadWare fit", "l");
-    }
+    if (fit) legend.AddEntry(fit->fFunction.get(), "RadWare fit", "l");
     multi.Draw("A");
     if (fit) fit->fFunction->Draw("same");
     legend.Draw();
@@ -532,7 +545,8 @@ void WriteSourcePlot(TDirectory* dir, const std::string& name, const std::string
 /// Write one detector's simulation, experimental graphs, and normalization.
 void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simulations_t& simulation,
                         const Experiment_t& experiment, const SourceExposures_t* exposures, bool radwareFit,
-                        const RadwareFitOptions_t& fitOptions, bool debug)
+                        const RadwareFitOptions_t& fitOptions, bool debug,
+                        const std::map<std::string, std::string>& attenuationMetadata)
 {
     auto* dir = parent->mkdir(name.c_str());
     if (!dir) throw std::runtime_error("Cannot create ROOT directory for " + name);
@@ -558,6 +572,12 @@ void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simul
 
     const auto raw = experiment.fRaw.find(name);
     if (raw == experiment.fRaw.end()) return;
+    const auto attenuation = attenuationMetadata.find(name);
+    if (attenuation != attenuationMetadata.end())
+    {
+        dir->cd();
+        TNamed("attenuation_geometry", attenuation->second.c_str()).Write();
+    }
     WriteSourcePlot(dir, "raw_counts", name + " raw counts;Energy (keV);Peak counts", raw->second, nullptr, 1, false, {}, debug);
     const auto corrected = experiment.fCorrected.find(name);
     if (corrected == experiment.fCorrected.end()) throw std::runtime_error("Missing corrected data for " + name);
@@ -580,10 +600,16 @@ void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simul
     if (exposures)
     {
         const auto absolute = CalculateAbsoluteEfficiencies(corrected->second, *exposures);
+        const double absoluteScale = CalculateSimulationScale(absolute.fCurves, fit->second);
         try {
             WriteSourcePlot(dir, "absolute", name + " absolute efficiency;Energy (keV);Full-energy peak efficiency",
-                            absolute.fCurves, &curves, 1, radwareFit, fitOptions, debug);
+                            absolute.fCurves, &curves, absoluteScale, radwareFit, fitOptions, debug);
         } catch (const std::runtime_error& error) { throw std::runtime_error("Detector " + name + ": " + error.what()); }
+        std::ostringstream simulationMetadata;
+        simulationMetadata << std::setprecision(17) << "simulation_scale=" << absoluteScale
+                           << "; simulation_scale_curve=" << fit->first;
+        dir->cd();
+        TNamed("absolute_simulation_normalization", simulationMetadata.str().c_str()).Write();
         std::ostringstream exposureMetadata;
         exposureMetadata << std::setprecision(17);
         for (const auto& source : corrected->second)
@@ -615,11 +641,18 @@ void WriteDetectorPlots(TDirectory* parent, const std::string& name, const Simul
 /// Validate the input curves and write all detector directories to a ROOT file.
 void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std::string& simulationFile,
                                             const std::string& outputFile, const std::string& sourceInfoFile, bool radwareFit,
-                                            const RadwareFitOptions_t& fitOptions, bool debug)
+                                            const RadwareFitOptions_t& fitOptions, bool debug, const AttenuationFiles_t* attenuation)
 {
     using namespace EfficiencyPlots;
-    const auto experiment = ReadExperimentalData(rawFile);
+    auto experiment = ReadExperimentalData(rawFile);
     const auto simulation = ReadSimulationData(simulationFile);
+    AttenuationData_t attenuationData;
+    std::map<std::string, std::string> attenuationMetadata;
+    if (attenuation)
+    {
+        attenuationData = ReadAttenuationData(*attenuation);
+        attenuationMetadata = ApplyAttenuation(experiment, simulation, attenuationData);
+    }
     const auto exposures = sourceInfoFile.empty() ? SourceExposures_t{} : ReadSourceExposures(sourceInfoFile);
     const auto* exposurePtr = sourceInfoFile.empty() ? nullptr : &exposures;
     if (exposurePtr)
@@ -651,9 +684,16 @@ void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std
     }
     std::unique_ptr<TFile> output(TFile::Open(outputFile.c_str(), "RECREATE"));
     if (!output || output->IsZombie()) throw std::runtime_error("Cannot create output: " + outputFile);
+    if (attenuation)
+    {
+        output->cd();
+        TObjString(attenuationData.fCapsuleCSV.c_str()).Write("attenuation_capsules_csv");
+        TObjString(attenuationData.fPositionCSV.c_str()).Write("attenuation_positions_csv");
+        TObjString(attenuationData.fCoefficientCSV.c_str()).Write("attenuation_coefficients_csv");
+    }
     const std::regex crossName(R"(^C[0-9]+$)");
     const std::regex backName(R"(^B[0-9]+$)");
-    for (const auto& detector : simulation) { WriteDetectorPlots(output.get(), detector.first, simulation, experiment, exposurePtr, radwareFit, fitOptions, debug); }
+    for (const auto& detector : simulation) { WriteDetectorPlots(output.get(), detector.first, simulation, experiment, exposurePtr, radwareFit, fitOptions, debug, attenuationMetadata); }
     for (const auto& detector : experiment.fDetectors)
     {
         if (detector.find('+') == std::string::npos) continue;
@@ -661,7 +701,7 @@ void EfficiencyPlots::WriteEfficiencyPlots(const std::string& rawFile, const std
         const bool isCross = std::regex_match(parts.front(), crossName);
         for (const auto& part : parts)
             if (!std::regex_match(part, isCross ? crossName : backName)) throw std::runtime_error("Mixed or invalid detector group: " + detector);
-        WriteDetectorPlots(output.get(), detector, simulation, experiment, exposurePtr, radwareFit, fitOptions, debug);
+        WriteDetectorPlots(output.get(), detector, simulation, experiment, exposurePtr, radwareFit, fitOptions, debug, attenuationMetadata);
     }
     output->Write();
     if (output->TestBit(TFile::kWriteError)) throw std::runtime_error("Error writing output ROOT file");

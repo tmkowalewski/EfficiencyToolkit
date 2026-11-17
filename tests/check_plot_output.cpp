@@ -35,7 +35,9 @@ void CheckCanvas(TDirectory& normal, TDirectory& debug, const std::string& canva
         auto* graph = dynamic_cast<TGraphErrors*>(link->GetObject());
         if (!graph) throw std::runtime_error("Unexpected graph type in " + canvasName);
         const std::string name = graph->GetName();
-        if (normal.GetKey(name.c_str())) throw std::runtime_error("Unexpected normal-mode component " + name);
+        const bool fitBand = name == canvasName + "_radware_fit_uncertainty";
+        if (!fitBand && normal.GetKey(name.c_str())) throw std::runtime_error("Unexpected normal-mode component " + name);
+        if (fitBand && !normal.GetKey(name.c_str())) throw std::runtime_error("Missing fit uncertainty band " + name);
         auto* saved = debug.Get<TGraphErrors>(name.c_str());
         auto* embedded = dynamic_cast<TGraphErrors*>(debugMulti.GetListOfGraphs()->FindObject(name.c_str()));
         if (!saved || !embedded || graph->GetN() != saved->GetN() || graph->GetN() != embedded->GetN())
@@ -54,6 +56,10 @@ void CheckCanvas(TDirectory& normal, TDirectory& debug, const std::string& canva
             auto* color = gROOT->GetColor(graph->GetFillColor());
             if (option != "3L" || (graph->GetFillStyle() != 3004 && graph->GetFillStyle() != 3005) || !color)
                 throw std::runtime_error("Missing line or shaded uncertainty band for " + name);
+        }
+        else if (fitBand)
+        {
+            if (option != "3" || graph->GetFillStyle() != 3001) throw std::runtime_error("Fit band style changed for " + name);
         }
         else if (option != "P") throw std::runtime_error("Experimental point style changed for " + name);
     }

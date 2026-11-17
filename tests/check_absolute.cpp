@@ -53,15 +53,6 @@ int main(int argc, char** argv)
         auto& co = RequireGraph(absolute, "C1+C5/absolute_56Co");
         CheckNear(co.GetPointY(0), 18659.0 / (0.00191 * 2000000 * 30000 * 0.9), "Co efficiency");
         RequireGraph(absolute, "C1+C5/absolute_60Co");
-        auto& sim = RequireGraph(absolute, "C1+C5/simulation_addback");
-        auto& overlay = RequireGraph(absolute, "C1+C5/absolute_simulation_addback");
-        if (sim.GetN() != overlay.GetN()) throw std::runtime_error("Simulation point count differs");
-        for (int i = 0; i < sim.GetN(); ++i)
-        {
-            CheckNear(overlay.GetPointY(i), sim.GetPointY(i), "Unscaled simulation");
-            CheckNear(overlay.GetErrorY(i), sim.GetErrorY(i), "Simulation uncertainty");
-        }
-        RequireGraph(absolute, "C1+C5/absolute_simulation_sum");
         if (absolute.Get("C1/absolute")) throw std::runtime_error("Unexpected absolute plot without data");
         auto* metadata = absolute.Get<TNamed>("C1+C5/absolute_exposure");
         if (!metadata || std::string(metadata->GetTitle()).find("status=measured") == std::string::npos)

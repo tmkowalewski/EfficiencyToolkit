@@ -5,6 +5,7 @@
 
 #include <TF1.h>
 #include <TFitResultPtr.h>
+#include <TGraphErrors.h>
 #include <memory>
 
 namespace EfficiencyPlots {
@@ -13,6 +14,8 @@ namespace EfficiencyPlots {
 struct RadwareFit_t {
    std::unique_ptr<TF1> fFunction;
    TFitResultPtr fResult;
+   std::unique_ptr<TGraphErrors> fUncertainty;
+   double fDataMin, fDataMax;
 };
 
 /// Fit combined source points with RadWare's efficiency parameterization.

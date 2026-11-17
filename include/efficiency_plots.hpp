@@ -8,6 +8,8 @@
 
 namespace EfficiencyPlots {
 
+struct AttenuationFiles_t;
+
 /// One energy and value, with their respective uncertainties.
 struct Point_t {
    Double_t fEnergy, fEnergyError, fValue, fValueError;
@@ -57,10 +59,19 @@ struct AbsoluteEfficiencies_t {
 /// Remove surrounding whitespace from a string.
 std::string TrimWhitespace(const std::string &value);
 
+/// Parse a CSV row, index its columns, and parse finite numeric values.
+std::vector<std::string> ParseCSVRow(const std::string& line);
+std::map<std::string, size_t> BuildColumnIndex(const std::vector<std::string>& fields);
+size_t FindColumn(const std::map<std::string, size_t>& columns, const std::string& name);
+double ParseNumber(const std::string& text, const std::string& context);
+bool InterpolateCurve(const Curve_t& curve, double x, double& y, double& ey);
+std::vector<std::string> SplitDetectorComponents(const std::string& name);
+
 /// Read the input data and write the detector plots to a ROOT file.
 void WriteEfficiencyPlots(const std::string &rawFile, const std::string &simulationFile, const std::string &outputFile,
                           const std::string &sourceInfoFile = "", bool radwareFit = false,
-                          const RadwareFitOptions_t &fitOptions = {}, bool debug = false);
+                          const RadwareFitOptions_t &fitOptions = {}, bool debug = false,
+                          const AttenuationFiles_t* attenuation = nullptr);
 } // namespace EfficiencyPlots
 
 #endif

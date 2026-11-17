@@ -109,10 +109,10 @@ decay-mode branching ratio is not applied again. The activity must already be
 the average during the run, including any decay correction. Multiplication by
 the live fraction assumes the live-time fraction is representative throughout
 the run; it is not valid for arbitrary time-dependent dead time correlated
-with source decay. No decay integration, source attenuation, angular,
-geometry, or coincidence-summing correction is applied. These assumptions
-and the correctness of inputs determine whether the result is physically
-absolute.
+with source decay. No decay integration or coincidence-summing correction is
+applied. Source-capsule attenuation is only included when explicitly enabled
+as described below. These assumptions and the correctness of inputs determine
+whether the result is physically absolute.
 
 Point errors propagate the independent supplied count, gamma-intensity,
 activity, and live-fraction uncertainties in quadrature. Activity and live
@@ -122,8 +122,17 @@ For `normalize` sources, error bars include only the scaled count and intensity
 errors: fitted-scale uncertainty, interpolation correlations, and correlations
 with the reference data are not included. Common exposure uncertainties and
 shared interpolation points also make the fit weights approximate.
-The `absolute` canvas contains one graph per source and overlays unscaled
-simulation efficiencies; with `--debug`, separately saved objects are named
+The `absolute` canvas contains one graph per source and overlays simulation
+curves fitted to the absolute experimental points. A single scale is fitted
+to the addback curve (or the single curve for CeBr) by inverse-variance
+weighted least squares, interpolating the simulation at experimental energies
+within its range. The same scale is applied to both clover simulation curves
+and their error bands. The factor and fitted curve type are saved in
+`absolute_simulation_normalization`; the simulation-only canvas remains
+unscaled. The fit ignores simulation uncertainties and correlations between
+experimental points, and the band does not include fitted-scale uncertainty.
+This empirical scale is not a measurement of absolute simulation efficiency.
+With `--debug`, separately saved objects are named
 `absolute_<source>` and `absolute_simulation_<type>`. Clover experimental
 counts are assumed to be addback; the sum simulation curve is also shown for
 comparison. Existing raw and relative plots remain unchanged.
@@ -138,7 +147,8 @@ These are **relative**, not absolute, efficiencies:
 1. Divide each peak count by its gamma intensity as a fraction per source
    decay. The intensity column is treated as the total photon emission
    probability per decay; the separate `BR` column is not multiplied again.
-   Count and intensity uncertainties are propagated independently.
+   Count and intensity uncertainties are propagated independently. If capsule
+   attenuation is enabled, correct the intensity-adjusted counts before alignment.
 2. Select the source with the most measured points for that detector as the
    reference. Linearly interpolate its corrected counts at the other sources'
    energies, without extrapolation. For each other source, calculate a single
@@ -158,11 +168,75 @@ graphs but are not used in the overlay scale fit.
 The source alignment empirically absorbs differences in run time, source
 activity, and other source-dependent normalization factors. It is not a
 measured live-time correction and does not establish absolute efficiency.
-No live times, activities, attenuation, coincidence-summing corrections, or
-decay corrections are assumed in the relative normalization. The alignment depends on the interpolated
+No live times, activities, coincidence-summing corrections, or decay
+corrections are assumed in the relative normalization. Capsule attenuation
+is used only when explicitly enabled. The alignment depends on the interpolated
 reference data, so sparse overlap or source-specific systematic effects can
 bias it. The raw experimental clover peaks are assumed to be addback counts;
 the crystal-sum curve is shown for comparison.
+
+## Source-capsule attenuation
+
+The three template files in `data/` are intentionally incomplete. Fill in
+`source_capsules_template.csv`, `detector_positions_template.csv`, and
+`attenuation_coefficients_template.csv` with actual measured geometry and
+material data before enabling this correction. No material coefficients or
+unknown detector angles are assumed. All three inputs are required together:
+
+```sh
+./EfficiencyToolkit/bin/make_eff_curves --source-info data/source_exposure_example.csv \
+  --capsules data/source_capsules_template.csv \
+  --detector-positions data/detector_positions_template.csv \
+  --attenuation-coefficients data/attenuation_coefficients_template.csv \
+  --output attenuation_corrected.root
+```
+
+Each capsule row specifies the source name, homogeneous `material`,
+`density_g_cm3`, cylinder `radius_cm`, full axial `thickness_cm`, and
+`axis_theta_deg` and `axis_phi_deg`. The emission point is at the center of
+the solid cylinder. These dimensions describe material from the source point
+to the *outer surface*, not just the wall of an empty shell. The model is not
+suitable for multilayer capsules, off-center sources, or distributed activity.
+
+Detector rows specify the direction from the origin to each individual
+detector's center. Angles are in degrees: theta is measured from the +z beam
+axis, and phi from +x toward +y in a right-handed coordinate system. C1 is
+at (theta, phi) = (90, 0); the cross detectors have theta = 90 degrees.
+Other template positions are unspecified. Fill all positions used by the
+experimental columns, including individual components of a pair. Fully blank
+position rows are ignored, but incomplete or missing required positions fail.
+Finite detector solid angle and its variation in material path are not modeled.
+
+The coefficient CSV contains `material,energy_keV,mass_attenuation_cm2_g`,
+with positive mass attenuation coefficients for each material. Supply verified
+total photon attenuation coefficients covering every source gamma energy;
+the program interpolates log-log and refuses extrapolation. Include enough
+tabulated points to resolve any absorption edges. Units are keV,
+cm²/g, g/cm³, and cm; use total attenuation rather than energy-absorption
+coefficients. The source-to-detector center ray intersects the first cylinder
+side or endcap at distance `L`; its uncollided transmission is
+`exp(-mass_attenuation * density * L)`. Intensity-corrected counts and their
+statistical uncertainties are divided by the transmission before relative
+normalization and absolute-efficiency calculation. Raw-count plots and the
+simulation curves are unchanged.
+
+For combined counts, an exact correction requires the unknown individual
+contributions. Instead, the program estimates transmission as the mean of the
+individual transmissions weighted by interpolated per-detector simulated
+addback efficiencies at that energy. This assumes the simulation describes
+the relative detector contributions and does not already contain the source
+capsule; it is an approximation, not an event-level reconstruction. Source
+attenuation, geometry, material, and simulation-weight uncertainties and their
+correlations are not included in point errors. Review these assumptions before
+scientific use.
+
+The ROOT file stores copies of the three CSVs as top-level
+`attenuation_capsules_csv`, `attenuation_positions_csv`, and
+`attenuation_coefficients_csv` objects, and
+per-source, per-component path lengths in each experimental detector's
+`attenuation_geometry` object. With no attenuation options, the previous
+calculation remains unchanged. Run the focused checks with
+`make -C EfficiencyToolkit test-attenuation`.
 
 ## RadWare efficiency fit
 
@@ -201,8 +275,11 @@ fixed G with `--radware-g`, or fix B with `--radware-b` (for example,
 `--radware-b 1` reproduces the earlier fixed-slope approach). Fixing B can be
 useful when there are too few low-energy data to constrain the turnover.
 At least six points are required when B is free, or five when it is fixed;
-the fit also requires a usable covariance matrix. The fitted range is the
-observed energy range; extrapolation is not validated.
+the fit also requires a usable covariance matrix. The fit itself uses only the
+observed energy range, but the plotted and saved function extends from the
+lowest data energy to 8000 keV (or the highest data energy if greater). Values
+above the data are extrapolations and are not validated by the measurements.
+The original data range is saved in `*_radware_fit_range`.
 
 The ROOT `*_radware_fit_result` objects contain fit status, chi-square, degrees
 of freedom, parameter errors and covariance. Fits minimize residuals in
@@ -213,6 +290,13 @@ covariance. A warning is printed if chi-square per degree of freedom exceeds 5
 or the covariance had to be forced positive definite. Convergence alone does
 not imply an adequate calibration; inspect residuals, fit range, sensitivity
 to fixed parameters and scale, and the resulting curve before scientific use.
+The `*_radware_fit_uncertainty` graph and shaded band show the pointwise
+one-standard-deviation parameter uncertainty, calculated by linear propagation
+of the full fitted-parameter covariance. Fixed parameters contribute no
+uncertainty. This is not a prediction interval and does not include model
+uncertainty, omitted correlations, source-normalization uncertainty, or
+uncertainty from extrapolation beyond the data; poor fit quality can make the
+band misleading.
 
 ## Simulation histograms
 
